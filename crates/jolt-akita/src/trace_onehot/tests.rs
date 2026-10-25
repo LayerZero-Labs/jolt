@@ -17,7 +17,7 @@ use akita_pcs::custom_source::{
 };
 use akita_pcs::AkitaError;
 use akita_pcs::{AkitaProverSetup, CpuBackend, OneHotPoly};
-use akita_types::PreparedSubringCoefficientPackingPoint;
+use akita_types::{PreparedSubringCoefficientPackingPoint, SubringCoefficientPackingTables};
 use jolt_field::{Fp128x8i32, One, Ring};
 
 use super::commit::commit_columns;
@@ -441,7 +441,8 @@ fn assert_production_kernels_match_materialized<const D: usize>(
         RootPolyShape::<AkitaField, D>::num_ring_elems(source),
         num_positions,
     );
-    let plan = SubringCoefficientPackingPlan { point: &prepared };
+    let tables = SubringCoefficientPackingTables::new(prepared).unwrap();
+    let plan = SubringCoefficientPackingPlan { tables: &tables };
     let streamed = <TestBackend as SubringCoefficientPackingBatchKernel<
         TraceOneHotColumnBatchView<'_, D>,
         AkitaField,
@@ -788,9 +789,10 @@ fn coefficient_packing_rejects_invalid_selector() {
     let source = &columns[0];
     let num_live_positions = RootPolyShape::<AkitaField, D>::num_ring_elems(&source);
     let prepared = packing_point::<D>(source.num_vars, num_live_positions, 4);
+    let tables = SubringCoefficientPackingTables::new(prepared).unwrap();
     let error = coefficient_packing_partials_columns::<AkitaField, D>(
         source,
-        SubringCoefficientPackingPlan { point: &prepared },
+        SubringCoefficientPackingPlan { tables: &tables },
     )
     .expect_err("selector outside K must reject");
     assert!(error.to_string().contains("outside K=16"));

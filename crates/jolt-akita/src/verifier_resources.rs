@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use akita_config::required_setup_prefix_slot_ids_for_schedule;
 use akita_config::{CommitmentConfig, TrustedScheduleCatalog};
 use akita_params::{
-    setup_prefix_slot_field_elements, verifier_setup_matrix_capacity_for_schedule, FlatMatrix,
+    setup_prefix_slot_field_elements, verifier_setup_matrix_capacity_for_schedule,
     SetupPrefixSlotId,
 };
 use akita_pcs::CpuBackend;
@@ -148,8 +148,8 @@ impl AkitaVerifierRequirements {
 }
 
 /// Derive the matrix and prefix commitments, reusing what `previous` already holds.
-/// Only missing prefix slots are computed. The generation matrix is truncated to
-/// the verifier's need afterwards.
+/// Stream missing prefix commitments from the seed and expand only the matrix
+/// retained by the verifier.
 fn generate_material(
     requirements: &AkitaVerifierRequirements,
     previous: Option<&AkitaBackendVerifierSetup>,
@@ -188,52 +188,35 @@ fn generate_material(
         num_field_elements,
         setup_seed: seed.clone(),
     };
-    let expanded = match previous {
-        Some(previous) if covers(previous, generation_fields) => Arc::clone(previous.expanded()),
-        previous => {
-            // Only the capacity grew: the existing coefficients are already the full prefix.
-            let coefficients = previous
-                .filter(|previous| {
-                    previous.expanded().descriptor().num_field_elements >= generation_fields
-                })
-                .map_or_else(
-                    || derive_public_matrix_prefix(generation_fields, &seed),
-                    |previous| previous.expanded().shared_matrix().clone(),
-                );
-            Arc::new(
-                AkitaExpandedSetup::from_trusted_seed_derived_parts_unchecked(
-                    descriptor(generation_fields),
-                    coefficients,
-                ),
-            )
-        }
-    };
     if !missing.is_empty() {
-        let backend = CpuBackend::<AkitaField, AkitaField>::new(Arc::clone(&expanded))
-            .map_err(invalid_setup)?;
-        let generated = backend
-            .export_setup_prefixes(&missing)
-            .map_err(invalid_setup)?;
+        let generated = CpuBackend::<AkitaField, AkitaField>::export_setup_prefixes_from_seed(
+            &descriptor(generation_fields),
+            &missing,
+        )
+        .map_err(invalid_setup)?;
         for slot in generated.verifier_slots() {
             prefixes.insert(slot).map_err(invalid_setup)?;
         }
     }
-    let expanded = match previous.filter(|previous| covers(previous, retained_fields)) {
-        Some(previous) => Arc::clone(previous.expanded()),
-        None if expanded.descriptor().num_field_elements > retained_fields => {
-            let coefficients = expanded
-                .shared_matrix()
-                .as_field_slice()
-                .get(..retained_fields)
-                .ok_or_else(|| invalid_setup("generated verifier matrix is too short"))?;
+    let expanded = match previous {
+        Some(previous) if covers(previous, retained_fields) => Arc::clone(previous.expanded()),
+        previous => {
+            // Only the capacity grew: the existing coefficients are already the full prefix.
+            let coefficients = previous
+                .filter(|previous| {
+                    previous.expanded().descriptor().num_field_elements >= retained_fields
+                })
+                .map_or_else(
+                    || derive_public_matrix_prefix(retained_fields, &seed),
+                    |previous| previous.expanded().shared_matrix().clone(),
+                );
             Arc::new(
                 AkitaExpandedSetup::from_trusted_seed_derived_parts_unchecked(
                     descriptor(retained_fields),
-                    FlatMatrix::from_flat_data(coefficients.to_vec()),
+                    coefficients,
                 ),
             )
         }
-        None => expanded,
     };
     AkitaBackendVerifierSetup::from_parts(expanded, prefixes).map_err(invalid_setup)
 }

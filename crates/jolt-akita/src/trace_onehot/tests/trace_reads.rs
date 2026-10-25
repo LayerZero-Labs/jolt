@@ -124,9 +124,10 @@ fn coefficient_packing_reads_each_trace_row_once() {
     let source = &columns[0];
     let num_live_positions = RootPolyShape::<AkitaField, D>::num_ring_elems(&source);
     let prepared = packing_point::<D>(source.num_vars, num_live_positions, 4);
+    let tables = SubringCoefficientPackingTables::new(prepared).unwrap();
     let _ = coefficient_packing_partials_columns::<AkitaField, D>(
         source,
-        SubringCoefficientPackingPlan { point: &prepared },
+        SubringCoefficientPackingPlan { tables: &tables },
     )
     .unwrap();
     assert_eq!(fills.load(Ordering::Relaxed), ROWS);
