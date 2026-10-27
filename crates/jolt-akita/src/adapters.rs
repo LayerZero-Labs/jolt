@@ -35,7 +35,7 @@ use crate::one_hot_family::{
 pub use crate::one_hot_family::{AKITA_ONE_HOT_K16, AKITA_ONE_HOT_K256};
 use crate::schedule_artifacts::AkitaScheduleArtifacts;
 use crate::schedule_registry::GroupedScheduleParams;
-use crate::verifier_resources::{Prepared, LAZY_VERIFIER_RESOURCES};
+use crate::verifier_resources::PREPARED_VERIFIER_RESOURCES;
 
 pub type AkitaField = akita_config::proof_optimized::fp128::Field;
 pub(crate) type AkitaConfig = JoltDenseBounded;
@@ -551,7 +551,7 @@ impl AkitaVerifierSetup {
     pub(crate) fn dense_scheme(&self) -> Result<&AkitaBackendScheme, OpeningsError> {
         let result = self.backend_cache.dense_scheme.get_or_init(|| {
             // Identical catalog bytes decode to the identical audited catalog.
-            if let Some(shared) = LAZY_VERIFIER_RESOURCES.decoded_dense(self) {
+            if let Some(shared) = PREPARED_VERIFIER_RESOURCES.decoded_dense(self) {
                 return Ok(shared);
             }
             self.schedule_artifacts
@@ -570,7 +570,7 @@ impl AkitaVerifierSetup {
 
     pub(crate) fn one_hot_scheme(&self) -> Result<&AkitaOneHotBackendScheme, OpeningsError> {
         let result = self.backend_cache.one_hot_scheme.get_or_init(|| {
-            if let Some(shared) = LAZY_VERIFIER_RESOURCES.decoded_one_hot(self) {
+            if let Some(shared) = PREPARED_VERIFIER_RESOURCES.decoded_one_hot(self) {
                 return Ok(shared);
             }
             self.schedule_artifacts
@@ -613,7 +613,7 @@ impl AkitaVerifierSetup {
 
     pub(crate) fn dense_verifier(&self) -> Result<&AkitaVerifier<AkitaConfig>, OpeningsError> {
         if self.backend_cache.dense.get().is_none() {
-            LAZY_VERIFIER_RESOURCES.attach(self)?;
+            PREPARED_VERIFIER_RESOURCES.attach(self)?;
         }
         self.backend_cache
             .dense
@@ -628,7 +628,7 @@ impl AkitaVerifierSetup {
             if self.max_num_vars < log_k {
                 return Err(invalid_batch("Akita verifier setup has no one-hot backend"));
             }
-            LAZY_VERIFIER_RESOURCES.attach(self)?;
+            PREPARED_VERIFIER_RESOURCES.attach(self)?;
         }
         self.backend_cache
             .one_hot
@@ -639,16 +639,14 @@ impl AkitaVerifierSetup {
 }
 
 /// Backend verifiers (admitted rows plus their prepared terminal matrices),
-/// shared with every setup of the same catalog. Derived state: ignored by
-/// equality and skipped by serde; clones share the cache.
+/// shared with every setup attached to the same prepared state. Derived state:
+/// ignored by equality and skipped by serde; clones share the cache.
 #[derive(Clone, Default)]
 pub(crate) struct BackendVerifierCache {
     dense: Arc<OnceLock<Arc<AkitaVerifier<AkitaConfig>>>>,
     one_hot: Arc<OnceLock<Arc<AkitaOneHotBackendVerifier>>>,
     dense_scheme: Arc<OnceLock<Result<Arc<AkitaBackendScheme>, String>>>,
     one_hot_scheme: Arc<OnceLock<Result<Arc<AkitaOneHotBackendScheme>, String>>>,
-    /// Keeps the shared state that produced the verifiers alive and findable.
-    owner: Arc<OnceLock<Arc<Prepared>>>,
 }
 
 impl BackendVerifierCache {
@@ -669,14 +667,14 @@ impl BackendVerifierCache {
         self.one_hot_scheme.get()?.as_ref().ok().cloned()
     }
 
-    pub(crate) fn adopt(&self, prepared: &Self, owner: Arc<Prepared>) {
+    /// Take `prepared`'s verifiers, which own their matrix and prefix commitments.
+    pub(crate) fn adopt(&self, prepared: &Self) {
         if let Some(verifier) = prepared.dense.get() {
             let _ = self.dense.get_or_init(|| Arc::clone(verifier));
         }
         if let Some(verifier) = prepared.one_hot.get() {
             let _ = self.one_hot.get_or_init(|| Arc::clone(verifier));
         }
-        let _ = self.owner.get_or_init(|| owner);
     }
 }
 
@@ -694,10 +692,12 @@ impl PartialEq for BackendVerifierCache {
 
 impl Eq for BackendVerifierCache {}
 
-/// Binds one backend flavor's setup identity into the transcript. The backend
-/// key is determined by the absorbed dimensions and admitted catalog; binding
-/// the validated catalog digest avoids hashing the large serialized key while
-/// preventing cross-catalog replay.
+/// Binds one backend flavor's setup identity into the transcript: the setup's
+/// dimensions and validated catalog digest, not the large serialized backend key.
+/// A key attached to a wider prepared state has more matrix capacity than these
+/// dimensions, which changes only which rows it admits. Akita's instance
+/// descriptor binds the proof's selected row (`PlanSection`) and the seed every
+/// matrix is a prefix of (`SetupSection`).
 pub(crate) fn append_verifier_setup<T: Transcript>(
     transcript: &mut T,
     setup: &AkitaVerifierSetup,

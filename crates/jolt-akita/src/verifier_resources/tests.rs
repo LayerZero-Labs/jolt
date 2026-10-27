@@ -1,6 +1,5 @@
 #![expect(
     clippy::unwrap_used,
-    clippy::indexing_slicing,
     clippy::panic,
     reason = "fixtures assert provisioning outcomes and fail loudly"
 )]
@@ -75,114 +74,67 @@ impl DenseFixture {
     }
 }
 
-fn current(lazy: &LazyVerifierResources) -> Arc<Prepared> {
-    lazy.live().last().and_then(Weak::upgrade).unwrap()
-}
-
-#[test]
-fn lazy_setups_share_one_state_and_grow_in_either_order() {
-    let fixtures = [14, 15].map(DenseFixture::new);
-    for reverse in [false, true] {
-        let lazy = LazyVerifierResources::new();
-        let setups = [metadata(&params(14)), metadata(&params(15))];
-        let order: [usize; 2] = if reverse { [1, 0] } else { [0, 1] };
-        for index in order {
-            lazy.attach(&setups[index]).unwrap();
-        }
-        for (fixture, setup) in fixtures.iter().zip(&setups) {
-            assert!(fixture.verify(setup, fixture.evaluation));
-        }
-        let shared = current(&lazy);
-        assert_eq!(shared.catalogs.len(), 1);
-        let fresh = metadata(&params(14));
-        lazy.attach(&fresh).unwrap();
-        assert!(Arc::ptr_eq(&shared, &current(&lazy)));
-        assert!(Arc::ptr_eq(
-            fresh.dense_verifier().unwrap().setup().expanded(),
-            shared.material.expanded()
-        ));
-        if reverse {
-            assert!(std::ptr::eq(
-                setups[0].dense_verifier().unwrap(),
-                setups[1].dense_verifier().unwrap()
-            ));
-        }
-    }
-}
-
-#[test]
-fn growth_keeps_computed_prefixes_and_extends_the_same_stream() {
-    let lazy = LazyVerifierResources::new();
-    let small = metadata(&AkitaSetupParams::one_hot_only(
-        20,
-        30,
-        [0; 32],
-        16,
-        params(14).schedule_artifacts,
-    ));
-    lazy.attach(&small).unwrap();
-    let before = current(&lazy);
-    let large = metadata(&AkitaSetupParams::one_hot_only(
-        25,
-        51,
-        [0; 32],
-        16,
-        params(14).schedule_artifacts,
-    ));
-    lazy.attach(&large).unwrap();
-    let after = current(&lazy);
-    assert!(!Arc::ptr_eq(&before, &after));
-    for id in AkitaVerifierRequirements::for_setups(std::slice::from_ref(&small))
-        .unwrap()
-        .prefix_slots
-    {
-        assert_eq!(
-            before.material.prefix_slots().get(&id),
-            after.material.prefix_slots().get(&id)
-        );
-    }
-    let old = before.material.expanded().shared_matrix().as_field_slice();
-    let new = after.material.expanded().shared_matrix().as_field_slice();
-    assert_eq!(Some(old), new.get(..old.len()));
-    drop(before);
-    assert!(small.one_hot_verifier().is_ok());
-}
-
-fn prepared(lazy: &LazyVerifierResources, setups: Vec<AkitaVerifierSetup>) -> Arc<Prepared> {
-    let prepared = Arc::new(Prepared::grow(setups.into_iter().map(Ok), None).unwrap());
-    lazy.publish(&prepared);
+fn prepared(registry: &PreparedRegistry, setups: Vec<AkitaVerifierSetup>) -> Arc<Prepared> {
+    let prepared = Arc::new(Prepared::new(setups.into_iter().map(Ok)).unwrap());
+    registry.publish(&prepared);
     prepared
 }
 
 #[test]
-fn setups_attach_to_prepared_state_without_growing_it() {
-    let lazy = LazyVerifierResources::new();
-    let state = prepared(&lazy, vec![metadata(&params(15))]);
-    let small = metadata(&params(14));
-    lazy.attach(&small).unwrap();
-    let transported: AkitaVerifierSetup =
-        serde_json::from_str(&serde_json::to_string(&small).unwrap()).unwrap();
-    lazy.attach(&transported).unwrap();
-    assert!(Arc::ptr_eq(&state, &current(&lazy)));
+fn unprepared_setups_build_unpublished_state_shared_by_clones() {
+    let fixture = DenseFixture::new(14);
+    let registry = PreparedRegistry::new();
+    let setup = metadata(&params(14));
+    registry.attach(&setup).unwrap();
+    let clone = setup.clone();
+    let other = metadata(&params(14));
+    registry.attach(&other).unwrap();
+    assert!(registry.states().is_empty());
     assert!(std::ptr::eq(
-        small.dense_verifier().unwrap(),
+        setup.dense_verifier().unwrap(),
+        clone.dense_verifier().unwrap()
+    ));
+    assert!(!std::ptr::eq(
+        setup.dense_verifier().unwrap(),
+        other.dense_verifier().unwrap()
+    ));
+    assert!(fixture.verify(&setup, fixture.evaluation));
+    assert!(fixture.verify(&other, fixture.evaluation));
+}
+
+#[test]
+fn setups_attach_to_the_smallest_covering_prepared_state() {
+    let registry = PreparedRegistry::new();
+    let large = prepared(&registry, vec![metadata(&params(30))]);
+    let small = prepared(&registry, vec![metadata(&params(15))]);
+    let setup = metadata(&params(14));
+    registry.attach(&setup).unwrap();
+    assert!(Arc::ptr_eq(
+        setup.dense_verifier().unwrap().setup().expanded(),
+        small.material.expanded()
+    ));
+    let transported: AkitaVerifierSetup =
+        serde_json::from_str(&serde_json::to_string(&setup).unwrap()).unwrap();
+    registry.attach(&transported).unwrap();
+    assert!(std::ptr::eq(
+        setup.dense_verifier().unwrap(),
         transported.dense_verifier().unwrap()
     ));
+    let wide = metadata(&params(30));
+    registry.attach(&wide).unwrap();
     assert!(Arc::ptr_eq(
-        small.dense_verifier().unwrap().setup().expanded(),
-        state.material.expanded()
+        wide.dense_verifier().unwrap().setup().expanded(),
+        large.material.expanded()
     ));
-    let larger = metadata(&params(16));
-    lazy.attach(&larger).unwrap();
-    assert!(!Arc::ptr_eq(&state, &current(&lazy)));
-    drop(larger);
-    let later = metadata(&params(14));
-    lazy.attach(&later).unwrap();
-    assert!(Arc::ptr_eq(&state, &current(&lazy)));
-    assert!(std::ptr::eq(
-        small.dense_verifier().unwrap(),
-        later.dense_verifier().unwrap()
-    ));
+    assert_eq!(registry.states().len(), 2);
+}
+
+#[test]
+fn a_group_wider_than_the_batch_is_rejected() {
+    let mut setup = metadata(&params(14));
+    setup.max_num_polys_per_commitment_group = setup.max_total_batch_polys + 1;
+    assert!(PreparedRegistry::new().attach(&setup).is_err());
+    assert!(AkitaVerifierResources::prepare([Ok(setup)]).is_err());
 }
 
 #[test]
@@ -201,11 +153,14 @@ fn one_hot_proofs_use_the_same_warm_backend_at_different_arities() {
     let artifacts = params(14).schedule_artifacts;
     let request =
         |vars| AkitaSetupParams::one_hot_only(vars, 1, [5; 32], 16, Arc::clone(&artifacts));
-    let lazy = LazyVerifierResources::new();
-    let _state = prepared(&lazy, vec![metadata(&request(15)), metadata(&params(15))]);
+    let registry = PreparedRegistry::new();
+    let _state = prepared(
+        &registry,
+        vec![metadata(&request(15)), metadata(&params(15))],
+    );
     let bound = [14, 15].map(|vars| {
         let setup = metadata(&request(vars));
-        lazy.attach(&setup).unwrap();
+        registry.attach(&setup).unwrap();
         (vars, setup)
     });
     assert!(std::ptr::eq(
@@ -254,7 +209,7 @@ fn prepared_resources_hold_every_required_prefix_and_only_the_verifier_matrix() 
     let requirements = AkitaVerifierRequirements::for_setups(std::slice::from_ref(&setup)).unwrap();
     assert!(!requirements.prefix_slots.is_empty());
     assert!(requirements.generation_field_elements > requirements.retained_field_elements);
-    let state = Prepared::grow([Ok(setup)], None).unwrap();
+    let state = Prepared::new([Ok(setup)]).unwrap();
     let material = &state.material;
     assert_eq!(
         material.expanded().descriptor().num_field_elements,
@@ -267,31 +222,31 @@ fn prepared_resources_hold_every_required_prefix_and_only_the_verifier_matrix() 
 }
 
 #[test]
-fn each_catalog_is_sized_by_its_own_largest_setup() {
+fn every_catalog_holds_the_prefixes_of_the_rows_its_state_admits() {
+    let artifacts = params(14).schedule_artifacts;
     let one_hot = metadata(&AkitaSetupParams::one_hot_only(
         20,
-        30,
+        1,
         [0; 32],
         16,
-        params(14).schedule_artifacts,
+        Arc::clone(&artifacts),
     ));
-    let dense = metadata(&params(30));
-    let alone = |setup: &AkitaVerifierSetup| {
-        AkitaVerifierRequirements::for_setups(std::slice::from_ref(setup)).unwrap()
-    };
-    let together =
-        AkitaVerifierRequirements::for_setups(&[one_hot.clone(), dense.clone()]).unwrap();
-    let (one_hot, dense) = (alone(&one_hot), alone(&dense));
-    assert_eq!(
-        together.prefix_slots,
-        &one_hot.prefix_slots | &dense.prefix_slots
-    );
-    assert_eq!(
-        together.retained_field_elements,
-        one_hot
-            .retained_field_elements
-            .max(dense.retained_field_elements)
-    );
+    let dense = metadata(&AkitaSetupParams::dense_only(30, 1, [0; 32], artifacts));
+    let state = Prepared::new([Ok(one_hot.clone()), Ok(dense)]).unwrap();
+    let descriptor = state.material.expanded().descriptor();
+    with_one_hot_family!(scheme one_hot.one_hot_scheme().unwrap(), |scheme| {
+        let admitted = SetupRequirements::from_catalog(
+            scheme.schedules(),
+            descriptor.max_num_vars,
+            descriptor.max_num_batched_polys,
+        )
+        .unwrap();
+        assert!(!admitted.prefix_slot_ids().is_empty());
+        assert!(admitted
+            .prefix_slot_ids()
+            .iter()
+            .all(|id| state.material.prefix_slots().get(id).is_some()));
+    });
 }
 
 #[test]
@@ -308,7 +263,36 @@ fn prepare_stops_at_the_first_error() {
 }
 
 #[test]
-fn growing_one_catalog_rebuilds_its_verifier_with_the_new_prefixes() {
+fn dropping_every_handle_stops_new_attachments() {
+    let registry = PreparedRegistry::new();
+    let state = prepared(&registry, vec![metadata(&params(15))]);
+    let attached = metadata(&params(14));
+    registry.attach(&attached).unwrap();
+    drop(state);
+    assert!(registry.states().is_empty());
+    let later = metadata(&params(14));
+    registry.attach(&later).unwrap();
+    assert!(!std::ptr::eq(
+        attached.dense_verifier().unwrap(),
+        later.dense_verifier().unwrap()
+    ));
+}
+
+#[test]
+fn the_newest_of_equal_states_is_attached() {
+    let registry = PreparedRegistry::new();
+    let _older = prepared(&registry, vec![metadata(&params(15))]);
+    let newer = prepared(&registry, vec![metadata(&params(15))]);
+    let setup = metadata(&params(14));
+    registry.attach(&setup).unwrap();
+    assert!(Arc::ptr_eq(
+        setup.dense_verifier().unwrap().setup().expanded(),
+        newer.material.expanded()
+    ));
+}
+
+#[test]
+fn setups_attach_up_to_the_state_capacity() {
     let artifacts = params(14).schedule_artifacts;
     let one_hot = |vars, polys| {
         metadata(&AkitaSetupParams::one_hot_only(
@@ -319,27 +303,94 @@ fn growing_one_catalog_rebuilds_its_verifier_with_the_new_prefixes() {
             Arc::clone(&artifacts),
         ))
     };
-    // The wide dense demand sizes the matrix, so growing the one-hot catalog
-    // adds prefix commitments while keeping the matrix.
+    let registry = PreparedRegistry::new();
     let dense = metadata(&AkitaSetupParams::dense_only(
         30,
-        64,
+        1,
         [0; 32],
         Arc::clone(&artifacts),
     ));
-    let large = one_hot(25, 51);
-    let before = Prepared::grow([Ok(dense), Ok(one_hot(20, 30))], None).unwrap();
-    let after = Prepared::grow([Ok(large.clone())], Some(&before)).unwrap();
-    assert!(Arc::ptr_eq(
-        before.material.expanded(),
-        after.material.expanded()
+    let state = prepared(&registry, vec![one_hot(20, 1), dense]);
+    let wider = one_hot(25, 1);
+    registry.attach(&wider).unwrap();
+    assert!(std::ptr::eq(
+        wider.one_hot_verifier().unwrap(),
+        state.catalog(&wider).unwrap().one_hot_verifier().unwrap()
     ));
-    let required = AkitaVerifierRequirements::for_setups(std::slice::from_ref(&large))
-        .unwrap()
-        .prefix_slots;
-    let verifier = after.catalog(&large).unwrap().one_hot_verifier().unwrap();
-    with_one_hot_family!(verifier verifier, |verifier| {
-        let slots = verifier.setup().prefix_slots();
-        assert!(required.iter().all(|id| slots.get(id).is_some()));
+    let descriptor = state.material.expanded().descriptor();
+    assert!(state
+        .catalog(&one_hot(descriptor.max_num_vars + 1, 1))
+        .is_none());
+    assert!(state
+        .catalog(&one_hot(20, descriptor.max_num_batched_polys + 1))
+        .is_none());
+}
+
+#[test]
+fn transported_setups_verify_a_proof_through_a_setup_prefix_fold() {
+    // One polynomial at 27 variables selects a shipped one-hot row that offloads a
+    // setup contribution; the assertion below checks it.
+    let artifacts = params(14).schedule_artifacts;
+    let request = AkitaSetupParams::one_hot_only(27, 1, [5; 32], 16, Arc::clone(&artifacts));
+    let (prover, verifier) = AkitaScheme::setup(request).unwrap();
+    let polynomial =
+        OneHotPolynomial::new(16, (0..1 << 23).map(|i| Some((i % 16) as u8)).collect());
+    let point = vec![AkitaField::from_u64(3); 27];
+    let evaluation = polynomial.evaluate(&point);
+    let (commitment, hint) = AkitaScheme::commit(&polynomial, &prover).unwrap();
+    let proof = AkitaScheme::open(
+        &polynomial,
+        &point,
+        evaluation,
+        &prover,
+        Some(hint),
+        &mut Blake2bTranscript::new(b"prefix-fold"),
+    )
+    .unwrap();
+    drop((prover, polynomial));
+    assert!(
+        with_one_hot_family!(scheme verifier.one_hot_scheme().unwrap(), |scheme| {
+            scheme
+                .schedules()
+                .resolve_selection(proof.selection())
+                .unwrap()
+                .schedule()
+                .recursive_folds
+                .iter()
+                .any(|fold| fold.params.setup_prefix().is_some())
+        })
+    );
+    let transported = || -> AkitaVerifierSetup {
+        serde_json::from_str(&serde_json::to_string(&verifier).unwrap()).unwrap()
+    };
+    let verifies = |setup: &AkitaVerifierSetup, evaluation| {
+        AkitaScheme::verify(
+            &commitment,
+            &point,
+            evaluation,
+            &proof,
+            setup,
+            &mut Blake2bTranscript::new(b"prefix-fold"),
+        )
+        .is_ok()
+    };
+    let registry = PreparedRegistry::new();
+    let alone = transported();
+    registry.attach(&alone).unwrap();
+    assert!(verifies(&alone, evaluation));
+    assert!(!verifies(&alone, evaluation + AkitaField::from_u64(1)));
+    drop(alone);
+
+    // A wider state: the attached verifier has more capacity than the proof's setup.
+    let dense = metadata(&AkitaSetupParams::dense_only(30, 1, [0; 32], artifacts));
+    let state = prepared(&registry, vec![transported(), dense]);
+    assert!(state.material.expanded().descriptor().max_num_vars > 27);
+    let attached = transported();
+    registry.attach(&attached).unwrap();
+    let expanded = with_one_hot_family!(verifier attached.one_hot_verifier().unwrap(), |verifier| {
+        Arc::clone(verifier.setup().expanded())
     });
+    assert!(Arc::ptr_eq(&expanded, state.material.expanded()));
+    assert!(verifies(&attached, evaluation));
+    assert!(!verifies(&attached, evaluation + AkitaField::from_u64(1)));
 }
