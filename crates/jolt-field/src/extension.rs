@@ -88,6 +88,40 @@ pub trait MulBaseUnreduced<F: Field>: ExtField<F> + Unreduced {
     fn mul_base_unreduced(self, x: F) -> Self::Product {
         self.mul_unreduced(Self::lift_base(x))
     }
+
+    /// `Σ_i pows[i]·coeffs[i]` over the shorter slice.
+    #[inline]
+    fn dot_base(pows: &[Self], coeffs: &[F]) -> Self {
+        pows.iter()
+            .zip(coeffs)
+            .map(|(pow, coeff)| pow.mul_base(*coeff))
+            .sum()
+    }
+
+    /// `Σ_i weights[i] · Σ_j rows[i][j]·pows[j]`.
+    ///
+    /// Panics unless there is one weight per row and every row matches `pows`.
+    #[inline]
+    fn weighted_dot_base_rows(rows: &[&[F]], weights: &[Self], pows: &[Self]) -> Self {
+        assert_eq!(rows.len(), weights.len());
+        assert!(rows.iter().all(|row| row.len() == pows.len()));
+        rows.iter()
+            .zip(weights)
+            .map(|(row, weight)| *weight * Self::dot_base(pows, row))
+            .sum()
+    }
+
+    /// Writes `out[i] = Σ_j pows[j]·rows[i][j]`.
+    ///
+    /// Panics unless there is one output per row and every row matches `pows`.
+    #[inline]
+    fn dot_base_rows(pows: &[Self], rows: &[&[F]], out: &mut [Self]) {
+        assert_eq!(rows.len(), out.len());
+        assert!(rows.iter().all(|row| row.len() == pows.len()));
+        for (slot, row) in out.iter_mut().zip(rows) {
+            *slot = Self::dot_base(pows, row);
+        }
+    }
 }
 
 /// A base field is its own degree-1 extension; the default body is exact.
