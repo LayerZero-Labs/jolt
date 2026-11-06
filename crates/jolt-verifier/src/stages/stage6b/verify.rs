@@ -734,8 +734,7 @@ mod tests {
 
     /// Every stage-6b wire claim vector is exact-length-pinned: padding or
     /// truncating any of them must be rejected before the claims reach the
-    /// Fiat-Shamir absorb (v12 #116402 — trailing entries were absorbed,
-    /// admitting non-canonical padded proofs).
+    /// Fiat-Shamir absorb.
     #[test]
     fn cycle_phase_claim_shape_pins_every_wire_vector_length() {
         let formula_dimensions = shape_formula_dimensions();

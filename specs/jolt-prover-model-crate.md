@@ -644,9 +644,9 @@ own these sequences, including the `L < p` check and a proof that the guest
 was built for the executing field (`specs/field-inline-protocol.md`, "SDK Limb
 Conversions").
 
-Field inline v1 is native-field only: the field used by the Jolt proof and the
+Field inline is native-field only: the field used by the Jolt proof and the
 field used by field-inline arithmetic are the same field. Prover code should not
-introduce quotient witnesses or non-native modular reduction for v1. The only
+introduce quotient witnesses or non-native modular reduction for the native-field protocol. The only
 width-dependent work is trace/bridge encoding for the selected field
 instantiation, such as two-limb or four-limb encodings.
 

@@ -433,7 +433,7 @@ field-inline.
 
 1. Commitment and preamble absorption.
    - Absorb field-inline commitments only when field inline is enabled.
-   - For v1 this includes the nested `FieldInlineCommitments {
+   - This includes the nested `FieldInlineCommitments {
      field_registers: FieldRegistersCommitments { rd_inc } }` payload.
    - The `jolt-core` compatibility converter is unavailable for
      `field-inline` builds until the prover path can supply this nested
@@ -564,7 +564,7 @@ field-inline.
 
 PCS assist is the opening-phase extension. The `jolt-verifier` boundary is
 generic over a `PcsAssist` implementation of `PcsProofAssist<PCS>`, whose
-associated `Proof` type is the optional payload. V1 concrete assist is Dory
+associated `Proof` type is the optional payload. The concrete assist is Dory
 assist, supplied by the `jolt-dory-assist-verifier` crate.
 
 `joint_opening_proof` is always present:
@@ -674,7 +674,7 @@ The wrapper verifying key or public statement must bind the inner
 as another. Wrapper protocol details are specified in
 [wrapper-protocol.md](wrapper-protocol.md).
 
-For the primary v1 wrapped-ZK path, the inner configured verifier is the
+For the primary wrapped-ZK path, the inner configured verifier is the
 transparent verifier and the transparent Jolt proof is private wrapper witness
 data. Base-layer BlindFold is still the standalone Jolt ZK path, but wrapping
 the BlindFold verifier is not the primary wrapper composition.
@@ -825,6 +825,6 @@ Each step should be reviewed before continuing to the next.
 8. Add wrapper verifier entry point.
    - Verify wrapper proofs against a fixed inner `JOLT_VERIFIER_CONFIG`.
    - Treat the transparent inner Jolt proof as private wrapper witness in the
-     primary v1 wrapped-ZK flow.
+     primary wrapped-ZK flow.
    - Do not run native inner Jolt stages in wrapper verification.
    - Review gate: wrapper proof for one inner config is rejected under another.

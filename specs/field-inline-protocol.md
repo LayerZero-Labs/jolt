@@ -80,12 +80,12 @@ Reference implementation context:
 
 - Sagar's [native-field coprocessor implementation](https://github.com/a16z/jolt/tree/8e35ed3de616dd6881ff4c2e087443bc488f7502) is the concrete reference
   for the first modular port.
-- The v1 port should preserve the important protocol choices while moving the
+- The modular port should preserve the important protocol choices while moving the
   protocol facts into modular crates.
 
 ## Scope
 
-V1 scope:
+The port includes:
 
 ```text
 native field-inline arithmetic only
@@ -107,7 +107,7 @@ multi-width field arithmetic independent of the Jolt field
 
 ## Native-Field Invariant
 
-Field inline v1 is native-field only. For every supported instantiation:
+Field inline is native-field only. For every supported instantiation:
 
 ```text
 q = modulus(field-inline arithmetic)
@@ -145,7 +145,7 @@ canonical modular reduction
 conversion semantics
 ```
 
-That is a separate project, not a field-inline v1 requirement.
+That is a separate project, not a field-inline requirement.
 
 ## Protocol Intuition
 
@@ -206,7 +206,7 @@ The multiplication equation is owned by the local R1CS/product relation.
 
 ## Trace Semantics
 
-Pure field operations should access only field registers in v1:
+Pure field operations should access only field registers:
 
 ```text
 pure field op:
@@ -241,14 +241,14 @@ cycle 12:
 ```
 
 Sagar's reference implementation treated incidental x-register accesses on
-field-op cycles as inert overhead. V1 should suppress them in the modular port
+field-op cycles as inert overhead. The modular port should suppress them
 unless the trace implementation makes suppression materially harder. If an
 implementation proves them inert instead, that must be an explicit trace-level
 compatibility choice, not an accidental side effect.
 
 ## Field Register Memory
 
-V1 uses a small field register file:
+Field inline uses a small field register file:
 
 ```text
 field_register_log_k = 4
@@ -322,7 +322,7 @@ IsFieldInv * (FieldInvProduct - 1) = 0
 ```
 
 This second product relation should batch with the same field-product machinery
-if FINV is included in v1. The protocol fact is that the inverse relation is
+if FINV is included. The protocol fact is that the inverse relation is
 over native `F`.
 
 ## Protocol Composition And Points
@@ -415,7 +415,7 @@ stage 8:
   RLCs it with the ordinary final committed openings
 ```
 
-For v1, the new committed field-inline surface is nested under
+The committed field-inline surface is nested under
 `FieldInlineCommitments::field_registers` and includes `FieldRdInc`.
 `FieldRdInc` enters the stage-6 reduction and then the final PCS RLC.
 `FieldRs1Ra`, `FieldRs2Ra`, and `FieldRdWa` mirror ordinary register-Twist RA/WA
@@ -835,7 +835,7 @@ field-register -> limbs:
 
 The FINV relation cannot be represented as
 `IsFieldInv * (FieldRs1Value * FieldRdValue - 1) = 0` in one R1CS row because
-that is cubic. V1 includes `FieldInvProduct` as a second field-native product
+that is cubic. The protocol includes `FieldInvProduct` as a second field-native product
 witness batched with `FieldProduct`.
 
 These are constraints in Jolt's execution relation. They are separate from the
@@ -1107,7 +1107,7 @@ sibling `protocols::composed` module owns relations that combine the two
 families; the verifier places those relations in its stage flow.
 
 The module should mirror the organization of `protocols::jolt` instead of
-inventing a separate component hierarchy. The main v1 `jolt-claims` work is to
+inventing a separate component hierarchy. The main `jolt-claims` work is to
 describe the field register-file Twist memory-checking formulas, field-native
 product formula, and Spartan opening metadata local to field-inline.
 Composition with the ordinary Jolt Spartan opening list lives in
