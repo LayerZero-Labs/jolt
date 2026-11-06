@@ -94,8 +94,12 @@ impl AkitaVerifierRequirements {
         }
         for row in rows {
             let layout = row.profiles().opening_layout().map_err(invalid_setup)?;
-            let capacity = verifier_setup_matrix_capacity_for_schedule(row.schedule(), &layout)
-                .map_err(invalid_setup)?;
+            let capacity = verifier_setup_matrix_capacity_for_schedule(
+                row.schedule(),
+                &layout,
+                akita_verifier::SetupMode::Check,
+            )
+            .map_err(invalid_setup)?;
             self.retained_field_elements = self
                 .retained_field_elements
                 .max(capacity.num_field_elements);

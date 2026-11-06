@@ -16,15 +16,25 @@
 
 use std::sync::Arc;
 
-use akita_params::{OpeningScheduleSelection, ScheduleRowDigest};
+use crate::deferred::SetupMode;
+use akita_config::required_setup_prefix_slot_ids_for_schedule;
+use akita_params::{
+    verifier_setup_matrix_capacity_for_schedule, FlatMatrix, OpeningScheduleSelection,
+    ScheduleRowDigest,
+};
 use akita_pcs::{
     build_riscv64_terminal_ntt_cache, AkitaDeserialize, AkitaSerialize, Compress, TrustedBytes,
     TrustedTerminalCache, Validate,
 };
-use akita_types::AkitaExpandedSetup;
+use akita_types::{
+    AkitaExpandedSetup, AkitaVerifierSetup as BackendSetup, SetupPrefixVerifierRegistry,
+};
 use jolt_openings::OpeningsError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::{ByteBuf, Bytes};
+
+use crate::one_hot_family::{with_one_hot_family, AkitaOneHotBackendScheme, OneHotFamily};
+use crate::AkitaBatchProof;
 
 use crate::adapters::{
     invalid_setup, AkitaBackendFlavor, AkitaBackendVerifierSetup, AkitaField, AkitaVerifierSetup,
@@ -331,6 +341,174 @@ impl AkitaVerifierSetup {
         }
         self.backend_cache = Default::default();
         Ok(())
+    }
+}
+
+impl AkitaVerifierSetup {
+    /// Export program-bound verifier material for the selected setup mode.
+    /// Defer exports only compression maps, prefix commitments and terminal
+    /// transforms. Raw A/B/D setup prefixes are never included in Defer mode.
+    /// The selected row's seed-derived material is fixed for
+    /// embedding in a recursion guest. The key packet includes a compact catalog
+    /// view for the selected row, its original catalog commitment, and the
+    /// seed-derived key. It must start on a 16-byte boundary; its versioned
+    /// header aligns the in-place matrix coefficients. Regenerate material
+    /// when the packet version changes.
+    pub fn prepare_recursion_material(
+        &self,
+        proof: &AkitaBatchProof,
+        mode: SetupMode,
+    ) -> Result<(Vec<u8>, Vec<u8>), OpeningsError> {
+        let selection = proof.selection();
+        let verifier = self.one_hot_verifier()?;
+        let (key, terminal) = with_one_hot_family!(verifier verifier, |verifier| {
+            let key = verifier.setup();
+            let row = verifier.schedules().resolve_selection(selection).map_err(invalid_setup)?;
+            let layout = row.profiles().opening_layout().map_err(invalid_setup)?;
+            let fields = verifier_setup_matrix_capacity_for_schedule(
+                row.schedule(), &layout, match mode { SetupMode::Check => akita_verifier::SetupMode::Check, SetupMode::Defer => akita_verifier::SetupMode::Defer },
+            ).map_err(invalid_setup)?.num_field_elements;
+            let terminal = build_riscv64_terminal_ntt_cache(
+                key, row.schedule(), selection.row_digest,
+            ).map_err(invalid_setup)?;
+            let mut descriptor = key.expanded().descriptor().clone();
+            descriptor.num_field_elements = fields;
+            let coefficients = key.expanded().shared_matrix().as_field_slice()
+                .get(..fields).ok_or_else(|| invalid_setup("missing verifier compression maps"))?;
+            let mut prefixes = SetupPrefixVerifierRegistry::new(descriptor.setup_seed.clone());
+            for id in required_setup_prefix_slot_ids_for_schedule(row.schedule(), &layout)
+                .map_err(invalid_setup)? {
+                let slot = key.prefix_slots().get(&id)
+                    .ok_or_else(|| invalid_setup("missing verifier prefix commitment"))?;
+                prefixes.insert(slot.clone()).map_err(invalid_setup)?;
+            }
+            let key = BackendSetup::from_parts(
+                Arc::new(AkitaExpandedSetup::from_trusted_seed_derived_parts_unchecked(
+                    descriptor, FlatMatrix::from_flat_data(coefficients.to_vec()),
+                )), prefixes,
+            ).map_err(invalid_setup)?;
+            let mut bytes = Vec::with_capacity(key.serialized_size(Compress::No));
+            key.serialize_with_mode(&mut bytes, Compress::No).map_err(invalid_setup)?;
+            Ok::<_, OpeningsError>((bytes, terminal))
+        })?;
+        let offset =
+            AkitaExpandedSetup::<AkitaField>::coefficient_offset(&key).map_err(invalid_setup)?;
+        let catalog = self
+            .one_hot_catalog()?
+            .to_verifier_view(&[selection])
+            .map_err(invalid_setup)?;
+        // The catalog view carries the original catalog commitment and the
+        // selected row. It receives the ordinary semantic audit on guest load.
+        // Header: magic[8], catalog byte length[8], alignment padding[1],
+        // followed by the view, padding, and the uncompressed backend key.
+        let header_len = 17usize
+            .checked_add(catalog.len())
+            .ok_or_else(|| invalid_setup("recursion material size overflow"))?;
+        let skew = 16 - (header_len + offset) % 16;
+        let mut body = Vec::with_capacity(header_len + skew + key.len());
+        body.extend_from_slice(b"AKITAV01");
+        body.extend_from_slice(
+            &u64::try_from(catalog.len())
+                .map_err(invalid_setup)?
+                .to_le_bytes(),
+        );
+        body.push(u8::try_from(skew).map_err(invalid_setup)?);
+        body.extend_from_slice(&catalog);
+        body.resize(header_len + skew, 0);
+        body.extend_from_slice(&key);
+        Ok((body, terminal))
+    }
+
+    /// Install material exported by `prepare_recursion_material`, fixed by the
+    /// verifier program identity. `TrustedBytes` vouches for canonical field
+    /// words; the caller must additionally authenticate the seed derivation of
+    /// both payloads and the provenance of the complete packet as an export
+    /// of this verifier setup. The compact catalog view still receives its
+    /// semantic audit and reproduces the catalog commitment bound by the proof.
+    /// Ordinary proof input does not meet this program-bound trust requirement.
+    pub fn install_recursion_material(
+        &self,
+        proof: &AkitaBatchProof,
+        key: TrustedBytes,
+        terminal: TrustedBytes,
+        mode: SetupMode,
+    ) -> Result<(), OpeningsError> {
+        let bytes = key.bytes();
+        if bytes.get(..8) != Some(b"AKITAV01") {
+            return Err(invalid_setup("unsupported recursion material packet"));
+        }
+        let catalog_len = usize::try_from(u64::from_le_bytes(
+            bytes
+                .get(8..16)
+                .ok_or_else(|| invalid_setup("missing catalog length"))?
+                .try_into()
+                .map_err(invalid_setup)?,
+        ))
+        .map_err(invalid_setup)?;
+        let skew = usize::from(
+            *bytes
+                .get(16)
+                .ok_or_else(|| invalid_setup("missing key padding"))?,
+        );
+        if !(1..=16).contains(&skew) {
+            return Err(invalid_setup("invalid key padding"));
+        }
+        let catalog_end = 17usize
+            .checked_add(catalog_len)
+            .ok_or_else(|| invalid_setup("catalog length overflow"))?;
+        let view = bytes
+            .get(17..catalog_end)
+            .ok_or_else(|| invalid_setup("truncated catalog view"))?;
+        let key = key
+            .skip(
+                catalog_end
+                    .checked_add(skew)
+                    .ok_or_else(|| invalid_setup("key offset overflow"))?,
+            )
+            .ok_or_else(|| invalid_setup("truncated key padding"))?;
+        let scheme = AkitaOneHotBackendScheme::from_verifier_view(
+            OneHotFamily::from_parts(self.one_hot_k, self.akita_chunk_profile())
+                .map_err(invalid_setup)?,
+            view,
+        )
+        .map_err(invalid_setup)?;
+        let scheme_ref = &scheme;
+        with_one_hot_family!(scheme scheme_ref, |typed| typed.schedules().catalog().resolve_selection(proof.selection()).map(|_| ())).map_err(invalid_setup)?;
+        let scheme = self.backend_cache.install_one_hot_scheme(scheme)?;
+        let setup = AkitaBackendVerifierSetup::borrow_trusted(key).map_err(invalid_setup)?;
+        let catalog = with_one_hot_family!(scheme scheme, |scheme| scheme.schedules().catalog());
+        let row = catalog
+            .resolve_selection(proof.selection())
+            .map_err(invalid_setup)?;
+        let fields = verifier_setup_matrix_capacity_for_schedule(
+            row.schedule(),
+            &row.profiles().opening_layout().map_err(invalid_setup)?,
+            match mode {
+                SetupMode::Check => akita_verifier::SetupMode::Check,
+                SetupMode::Defer => akita_verifier::SetupMode::Defer,
+            },
+        )
+        .map_err(invalid_setup)?
+        .num_field_elements;
+        if mode == SetupMode::Defer
+            && setup.expanded().shared_matrix().num_field_elements() != fields
+        {
+            return Err(invalid_setup(
+                "deferred guest material must contain only compression maps",
+            ));
+        }
+        let verifier = scheme
+            .verifier_for_selection(
+                setup,
+                proof.selection(),
+                TrustedTerminalCache::View(terminal.bytes()),
+                match mode {
+                    SetupMode::Check => akita_verifier::SetupMode::Check,
+                    SetupMode::Defer => akita_verifier::SetupMode::Defer,
+                },
+            )
+            .map_err(invalid_setup)?;
+        self.backend_cache.install_one_hot(verifier)
     }
 }
 

@@ -1,0 +1,41 @@
+[package]
+name = "jolt-akita-external-guest"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[features]
+checked-challenge-advice = ["dep:akita-challenges"]
+guest = [
+  "dep:serde_bytes",
+  "dep:jolt-akita-external",
+  "dep:jolt-akita",
+  "dep:jolt-transcript",
+  "jolt/guest-std",
+  "jolt/guest-size-class-alloc",
+  "jolt/stdout",
+  "jolt/random",
+  "jolt/thread",
+]
+[dependencies]
+akita-challenges = { workspace = true, optional = true }
+serde_bytes = { workspace = true, optional = true }
+jolt = { package = "jolt-sdk", path = "../../../jolt-sdk", default-features = false }
+jolt-akita-external = { path = "../replay", features = [
+  "akita",
+], optional = true }
+jolt-akita = { workspace = true, default-features = false, optional = true }
+jolt-transcript = { workspace = true, features = [
+  "blake2-inline",
+], optional = true }
+[lib]
+test = false
+doctest = false
+[[bin]]
+name = "jolt-akita-external-guest"
+path = "src/main.rs"
+test = false
+bench = false
+
+# Direct dependencies select the guest transcript and challenge inlines.
+[package.metadata.cargo-machete]
+ignored = ["jolt-transcript"]
