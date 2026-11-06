@@ -5,16 +5,14 @@
 //!
 //! The reference kernel binds six dense `2^(4 + log_T)` register-major grids per round.
 //! This kernel computes the same round polynomials from the sparse structure of the
-//! field-inline access pattern — the v2-port `SparseFieldRegState` design
-//! (`specs/native-field-registers.md`, Stage 4) restated over today's relation shapes:
+//! field-inline access pattern:
 //!
 //! - **Sparse cycle-major entries**: ≤ 3 entries per active field-inline cycle (rs2
 //!   merges into rs1's cell, rd into either read's), built in one pass over
 //!   the field-inline oracle's decoded rows. The witness boundary validates the
 //!   K = 16 register history, so extraction can fill disjoint blocks in parallel.
 //!   Between touches a field register is constant, so a missing merge partner
-//!   is inferred from its neighbor's `prev_val`/`next_val` — field-valued
-//!   here (the v2 delta vs the integer sibling's raw `u64`s). The integer
+//!   is inferred from its neighbor's `prev_val`/`next_val`. The integer
 //!   access coefficients remain compact selector bits until the first bind.
 //! - **γ-combined read coefficient**: one `ra = γ·rs1_ra + γ²·rs2_ra` column
 //!   per entry (exact by distributivity).
@@ -24,7 +22,7 @@
 //!   increment column stays allocation-free when zero.
 //! - **Rayon past a threshold**: the round accumulation and the bind shell
 //!   out to pair-aligned parallel blocks once the entry count crosses
-//!   [`PARALLEL_THRESHOLD`] (the v2 `par_chunk_by` convention); below it the
+//!   [`PARALLEL_THRESHOLD`]; below it the
 //!   sequential walks win.
 //! - **Small fixed K**: after the cycle rounds the state collapses to three
 //!   `K = 2^4` dense arrays plus two scalars; address rounds cost O(K).
@@ -69,9 +67,6 @@ use crate::{
 };
 use jolt_witness::field_inline::FieldInlineWitnessOracle;
 
-/// Entry count above which the round accumulation and the bind run over
-/// pair-aligned parallel blocks (the v2-port `DENSE_BIND_PAR_THRESHOLD`
-/// convention — below it the sequential walk beats the fork/join overhead).
 const PARALLEL_THRESHOLD: usize = 1 << 12;
 
 /// One non-zero cell of the conceptual `K × T` field register matrices: the bound `Val`
