@@ -4,18 +4,26 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 [features]
+capture-challenges = ["dep:akita-challenges", "akita-challenges/experiment-capture"]
+field-inline-fp128 = ["dep:jolt-field", "jolt-field/field-inline-guest-fp128"]
+ntt-inline = ["akita-algebra/ntt-inline"]
 guest = [
+  "dep:akita-challenges",
+  "dep:serde_bytes",
   "dep:jolt-akita-external",
   "dep:jolt-akita",
   "dep:jolt-transcript",
-  "dep:akita-challenges",
-  "dep:akita-transcript",
+  "dep:akita-algebra",
   "jolt/guest-std",
+  "jolt/guest-size-class-alloc",
   "jolt/stdout",
   "jolt/random",
   "jolt/thread",
 ]
 [dependencies]
+serde_bytes = { workspace = true, optional = true }
+akita-challenges = { workspace = true, optional = true }
+jolt-field = { workspace = true, optional = true }
 jolt = { package = "jolt-sdk", path = "../../../jolt-sdk", default-features = false }
 jolt-akita-external = { path = "../replay", features = [
   "akita",
@@ -24,12 +32,7 @@ jolt-akita = { workspace = true, optional = true }
 jolt-transcript = { workspace = true, features = [
   "blake2-inline",
 ], optional = true }
-akita-challenges = { workspace = true, features = [
-  "keccak-inline",
-], optional = true }
-akita-transcript = { git = "https://github.com/LayerZero-Labs/akita.git", rev = "e1f722d5633af4575f0cb6aa57d93d69c9c66024", default-features = false, features = [
-  "blake2-inline",
-], optional = true }
+akita-algebra = { workspace = true, optional = true }
 [lib]
 test = false
 doctest = false
@@ -41,4 +44,4 @@ bench = false
 
 # Direct dependencies select the guest transcript and challenge inlines.
 [package.metadata.cargo-machete]
-ignored = ["akita-challenges", "akita-transcript", "jolt-transcript"]
+ignored = ["akita-algebra", "jolt-transcript"]

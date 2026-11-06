@@ -9,7 +9,9 @@ use ark_serialize::{
     Write,
 };
 
-use crate::{JoltInstruction, NormalizedOperands, SourceInstruction};
+use crate::NormalizedOperands;
+#[cfg(feature = "field-inline")]
+use crate::{JoltInstruction, SourceInstruction};
 
 pub const FIELD_REGISTER_LOG_K: u8 = 4;
 pub const FIELD_REGISTER_COUNT: u8 = 1 << FIELD_REGISTER_LOG_K;
@@ -409,6 +411,12 @@ pub const fn is_field_inline_jolt(kind: crate::JoltInstructionKind) -> bool {
     reason = "fail-closed selector: non-field-inline instructions map to None"
 )]
 pub const fn field_inline_source_op(kind: crate::SourceInstructionKind) -> Option<FieldInlineOp> {
+    #[cfg(not(feature = "field-inline"))]
+    {
+        let _ = kind;
+        return None;
+    }
+    #[cfg(feature = "field-inline")]
     match kind {
         SourceInstruction::FieldAdd(_) => Some(FieldInlineOp::Add),
         SourceInstruction::FieldSub(_) => Some(FieldInlineOp::Sub),
@@ -433,6 +441,12 @@ pub const fn field_inline_source_op(kind: crate::SourceInstructionKind) -> Optio
     reason = "fail-closed selector: non-field-inline instructions map to None"
 )]
 pub const fn field_inline_jolt_op(kind: crate::JoltInstructionKind) -> Option<FieldInlineOp> {
+    #[cfg(not(feature = "field-inline"))]
+    {
+        let _ = kind;
+        return None;
+    }
+    #[cfg(feature = "field-inline")]
     match kind {
         JoltInstruction::FieldAdd(_) => Some(FieldInlineOp::Add),
         JoltInstruction::FieldSub(_) => Some(FieldInlineOp::Sub),

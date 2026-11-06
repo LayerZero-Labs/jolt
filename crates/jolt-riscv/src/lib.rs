@@ -22,7 +22,6 @@
     clippy::wildcard_enum_match_arm
 )]
 
-#[cfg(feature = "field-inline")]
 pub mod field_inline;
 mod flags;
 pub mod instructions;
@@ -342,7 +341,6 @@ macro_rules! for_each_jolt_instruction_kind {
     };
 }
 
-#[cfg(feature = "field-inline")]
 pub use field_inline::{
     field_inline_jolt_op, field_inline_load_accumulate_from_memory_funct7,
     field_inline_load_accumulate_from_memory_offset, field_inline_operand_shape,

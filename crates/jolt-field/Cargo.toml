@@ -15,7 +15,7 @@ ignored = ["cc", "allocative"]
 workspace = true
 
 [dependencies]
-jolt-riscv = { workspace = true, features = ["field-inline"], optional = true }
+jolt-riscv = { workspace = true, optional = true }
 ark-ff = { workspace = true, optional = true }
 ark-serialize = { workspace = true, optional = true }
 ark-bn254 = { workspace = true, features = ["curve"], optional = true }

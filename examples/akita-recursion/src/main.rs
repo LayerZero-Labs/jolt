@@ -467,10 +467,14 @@ fn run() -> Result<()> {
             let statement = replay(&pair)?;
             let material = report.with_extension("material");
             fs::create_dir_all(&material)?;
-            let (key, terminal) = pair
-                .preprocessing
-                .pcs_setup
-                .prepare_recursion_material(&pair.inner[0].proof.joint_opening_proof)?;
+            let (key, terminal) = pair.preprocessing.pcs_setup.prepare_recursion_material(
+                &pair.inner[0].proof.joint_opening_proof,
+                if deferred_only {
+                    SetupMode::Defer
+                } else {
+                    SetupMode::Check
+                },
+            )?;
             fs::write(material.join("key.bin"), key)?;
             fs::write(material.join("terminal.bin"), terminal)?;
             std::env::set_var("JOLT_AKITA_RECURSION_MATERIAL", material.canonicalize()?);
@@ -488,6 +492,14 @@ fn run() -> Result<()> {
                 }
                 Some(before)
             };
+            if !deferred_only {
+                let (key, terminal) = pair.preprocessing.pcs_setup.prepare_recursion_material(
+                    &pair.inner[0].proof.joint_opening_proof,
+                    SetupMode::Defer,
+                )?;
+                fs::write(material.join("key.bin"), key)?;
+                fs::write(material.join("terminal.bin"), terminal)?;
+            }
             let (deferred, deferred_io) = execute_pair("verify_deferred", &bytes, directory)?;
             let descriptor: Vec<u8> = postcard::from_bytes(&deferred_io.outputs)?;
             let _inherited = InheritedSetupClaims::from_public_output(0, statement, &descriptor)?;

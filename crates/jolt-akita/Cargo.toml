@@ -16,9 +16,8 @@ default = ["parallel"]
 parallel = ["akita-pcs/parallel"]
 # Akita's transcript and NTT kernels over the jolt-inlines Blake2b and NTT
 # inlines, for a RISC-V guest verifier.
-blake2-inline = ["akita-pcs/blake2-inline"]
+blake2-inline = ["jolt-transcript/blake2-inline"]
 ntt-inline = ["akita-pcs/ntt-inline"]
-keccak-inline = ["akita-pcs/keccak-inline"]
 # Enables field-inline schedule coverage alongside the prover's field profile.
 field-inline = []
 profiling = ["parallel"]

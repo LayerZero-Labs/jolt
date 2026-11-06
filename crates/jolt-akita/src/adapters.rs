@@ -812,6 +812,7 @@ impl AkitaVerifierSetup {
                         scheme.schedules().clone(),
                         prepared.selection(),
                         Some(prepared.terminal_cache()?),
+                        akita_verifier::SetupMode::Check,
                     )
                     .map_err(invalid_setup)
                 })?;
@@ -839,6 +840,7 @@ impl AkitaVerifierSetup {
                             prepared.backend_key()?,
                             prepared.selection(),
                             prepared.terminal_cache()?,
+                            akita_verifier::SetupMode::Check,
                         )
                         .map_err(invalid_setup)
                 })?;
@@ -917,6 +919,27 @@ pub(crate) struct BackendVerifierCache {
 }
 
 impl BackendVerifierCache {
+    pub(crate) fn install_one_hot_scheme(
+        &self,
+        scheme: AkitaOneHotBackendScheme,
+    ) -> Result<&AkitaOneHotBackendScheme, OpeningsError> {
+        let scheme_ref = &scheme;
+        let digest = with_one_hot_family!(scheme scheme_ref, |scheme| scheme.schedules().catalog().catalog_digest());
+        let cached = self
+            .one_hot_scheme
+            .get_or_init(|| Ok(Arc::new(scheme)))
+            .as_deref()
+            .map_err(|error| invalid_setup(error.clone()))?;
+        if with_one_hot_family!(scheme cached, |scheme| scheme.schedules().catalog().catalog_digest())
+            != digest
+        {
+            return Err(invalid_setup(
+                "recursion catalog disagrees with initialized catalog",
+            ));
+        }
+        Ok(cached)
+    }
+
     pub(crate) fn install_one_hot(
         &self,
         verifier: AkitaOneHotBackendVerifier,

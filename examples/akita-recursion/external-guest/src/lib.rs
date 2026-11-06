@@ -22,9 +22,13 @@ fn observe(event: Event) {
     stack_size = 33554432,
     max_trace_length = 68719476736
 )]
-fn verify_external(bytes: UntrustedAdvice<Vec<u8>>) -> Vec<u8> {
+fn verify_external(bytes: UntrustedAdvice<serde_bytes::ByteBuf>) -> Vec<u8> {
     jolt::start_cycle_tracking("decode_external");
-    let advice: OuterAdvice = decode_exact(&bytes).expect("external advice");
+    let n=u64::from_le_bytes(bytes.get(..8).expect("hint envelope").try_into().expect("length"))as usize;
+    let base=bytes.get(8..8+n).expect("outer advice range");
+    let offset=8+n+(8-n%8)%8;
+    akita_challenges::install_checked_hints(bytes.get(offset..).expect("hint range")).expect("hint ingress");
+    let advice: OuterAdvice = decode_exact(base).expect("external advice");
     let verifier = decode_exact(&VERIFIER.0).expect("fixed outer verifier");
     let input = jolt_akita_external::ExternalInput {
         preprocessing: verifier,
@@ -42,7 +46,12 @@ fn verify_external(bytes: UntrustedAdvice<Vec<u8>>) -> Vec<u8> {
     input
         .preprocessing
         .pcs_setup
-        .install_recursion_material(&input.outer.proof.joint_opening_proof, key, terminal)
+        .install_recursion_material(
+            &input.outer.proof.joint_opening_proof,
+            key,
+            terminal,
+            SetupMode::Defer,
+        )
         .expect("outer verifier material");
     jolt::end_cycle_tracking("install_prepared_setup");
     let mut tape = Tape(input.answers.iter());
@@ -50,6 +59,7 @@ fn verify_external(bytes: UntrustedAdvice<Vec<u8>>) -> Vec<u8> {
         .replay(SetupMode::Defer, &mut tape, observe)
         .expect("outer deferred verification");
     assert!(tape.0.next().is_none(), "unused setup advice");
+    akita_challenges::finish_checked_hints().expect("unused challenge hints");
     assert_eq!(
         statement.claims().len(),
         EXPECTED_PENDING,

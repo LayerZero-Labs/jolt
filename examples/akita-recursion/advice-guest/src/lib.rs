@@ -42,7 +42,12 @@ fn verify_advice(bytes: UntrustedAdvice<Vec<u8>>) -> Vec<u8> {
     let (key, terminal) = unsafe { (TrustedBytes::new(&KEY.0), TrustedBytes::new(&TERMINAL.0)) };
     pair.preprocessing
         .pcs_setup
-        .install_recursion_material(&pair.inner[0].proof.joint_opening_proof, key, terminal)
+        .install_recursion_material(
+            &pair.inner[0].proof.joint_opening_proof,
+            key,
+            terminal,
+            SetupMode::Defer,
+        )
         .expect("inner material");
     jolt::end_cycle_tracking("install_prepared_setup");
     let mut answers = AnswerTape(pair.answers.iter());

@@ -39,7 +39,12 @@ fn execute(bytes: &[u8], mode: SetupMode) -> Vec<u8> {
     let (key, terminal) = unsafe { (TrustedBytes::new(&KEY.0), TrustedBytes::new(&TERMINAL.0)) };
     pair.preprocessing
         .pcs_setup
-        .install_recursion_material(&pair.inner[0].proof.joint_opening_proof, key, terminal)
+        .install_recursion_material(
+            &pair.inner[0].proof.joint_opening_proof,
+            key,
+            terminal,
+            mode,
+        )
         .expect("install program-bound verifier material");
     jolt::end_cycle_tracking("install_prepared_setup");
     let statement = {

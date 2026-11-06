@@ -28,6 +28,12 @@ fn main() -> Result<()> {
         )?;
         return Ok(());
     }
+    if args.len() == 5 && args[1] == "--verify-material" {
+        let input: ExternalInput =
+            jolt_akita_external::decode_exact(&fs::read(&args[2])?).map_err(|e| anyhow!(e))?;
+        verify_material(input, &PathBuf::from(&args[3]), &PathBuf::from(&args[4]))?;
+        return Ok(());
+    }
     if args.len() == 4 && args[1] == "--prepare-pair" {
         let pair =
             jolt_akita_external::decode_exact(&fs::read(&args[2])?).map_err(|e| anyhow!(e))?;
@@ -176,7 +182,7 @@ fn prepare(input: ExternalInput, dir: &Path) -> Result<()> {
     let (key, terminal) = input
         .preprocessing
         .pcs_setup
-        .prepare_recursion_material(&input.outer.proof.joint_opening_proof)?;
+        .prepare_recursion_material(&input.outer.proof.joint_opening_proof, SetupMode::Defer)?;
     fs::create_dir_all(dir)?;
     fs::write(dir.join("key.bin"), key)?;
     fs::write(dir.join("terminal.bin"), terminal)?;
@@ -293,7 +299,7 @@ fn prepare_pair(mut pair: ProofPair, dir: &Path) -> Result<()> {
     let (key, terminal) = pair
         .preprocessing
         .pcs_setup
-        .prepare_recursion_material(&pair.inner[0].proof.joint_opening_proof)?;
+        .prepare_recursion_material(&pair.inner[0].proof.joint_opening_proof, SetupMode::Defer)?;
     fs::create_dir_all(dir)?;
     fs::write(dir.join("key.bin"), key)?;
     fs::write(dir.join("terminal.bin"), terminal)?;
@@ -322,5 +328,64 @@ fn prepare_pair(mut pair: ProofPair, dir: &Path) -> Result<()> {
         )?)?,
     )?;
     fs::write(dir.join("input.bin"), [])?;
+    Ok(())
+}
+
+// Native replay of exactly the compact material embedded by the deferred guest.
+fn verify_material(input: ExternalInput, dir: &Path, report: &Path) -> Result<()> {
+    fn trusted(bytes: Vec<u8>) -> jolt_akita::TrustedBytes {
+        let words = Box::leak(vec![0u128; bytes.len().div_ceil(16)].into_boxed_slice());
+        // SAFETY: leaked u128 storage is aligned and lives for the entire process.
+        let aligned =
+            unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), bytes.len()) };
+        aligned.copy_from_slice(&bytes);
+        // SAFETY: the CLI accepts only material exported from trusted local setup.
+        unsafe { jolt_akita::TrustedBytes::new(aligned) }
+    }
+    let key = fs::read(dir.join("key.bin"))?;
+    let key_bytes = key.len();
+    let terminal = fs::read(dir.join("terminal.bin"))?;
+    let terminal_bytes = terminal.len();
+    input.preprocessing.pcs_setup.install_recursion_material(
+        &input.outer.proof.joint_opening_proof,
+        trusted(key),
+        trusted(terminal),
+        SetupMode::Defer,
+    )?;
+    let expected: Vec<u8> = postcard::from_bytes(&fs::read(dir.join("expected-output.bin"))?)?;
+    let mut times = Vec::new();
+    for _ in 0..10 {
+        let mut tape = Tape(input.answers.iter());
+        let start = Instant::now();
+        let pending = input
+            .replay(SetupMode::Defer, &mut tape, |_| {})
+            .map_err(|e| anyhow!(e))?;
+        times.push(start.elapsed().as_secs_f64());
+        ensure!(tape.0.next().is_none(), "unused setup advice");
+        ensure!(
+            pending.claims().len() == expected_pending(&input)?,
+            "pending count"
+        );
+        ensure!(
+            pending.descriptor_bytes::<AkitaField>()? == expected,
+            "changed pending statement"
+        );
+    }
+    ensure!(
+        input
+            .replay(SetupMode::Check, &mut Tape(input.answers.iter()), |_| {})
+            .is_err(),
+        "compact material accepted Check mode"
+    );
+    let mut measured = times[2..].to_vec();
+    measured.sort_by(f64::total_cmp);
+    let result = serde_json::json!({
+        "key_bytes":key_bytes,"terminal_bytes":terminal_bytes,"warmups":2,"measured":8,
+        "deferred_seconds":times,"deferred_median_seconds":(measured[3]+measured[4])/2.,
+        "canonical_output_identical":true,"pending_claims":expected_pending(&input)?,
+        "check_mode_rejected":true,
+    });
+    fs::write(report, serde_json::to_vec_pretty(&result)?)?;
+    println!("{result}");
     Ok(())
 }

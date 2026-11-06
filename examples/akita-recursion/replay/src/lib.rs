@@ -118,3 +118,48 @@ pub struct OuterAdvice {
     pub answers: Vec<AkitaField>,
 }
 pub use jolt_akita_recursion::decode_exact;
+
+/// Two outer proofs checked against one committed verifier. Each proof consumes
+/// its own inherited batch; their direct-fold obligations form the public batch.
+#[derive(Serialize, Deserialize)]
+pub struct OuterPairAdvice {
+    pub outer: [OuterAdvice; 2],
+}
+impl OuterPairAdvice {
+    pub fn replay(
+        self,
+        preprocessing: Preprocessing,
+        inherited_setup_fields: usize,
+        mode: SetupMode,
+        mut observe: impl FnMut(usize, Event),
+    ) -> Result<SetupBatchStatement<AkitaField>, String> {
+        let output_setup_fields = self.outer[0].output_setup_fields;
+        if self.outer[1].output_setup_fields != output_setup_fields {
+            return Err("outer setup domains differ".into());
+        }
+        let polynomial = preprocessing
+            .pcs_setup
+            .setup_polynomial(output_setup_fields)
+            .map_err(|e| e.to_string())?;
+        let mut claims = Vec::new();
+        for (index, advice) in self.outer.into_iter().enumerate() {
+            let input = ExternalInput {
+                preprocessing: preprocessing.clone(),
+                outer: advice.outer,
+                inherited_setup_fields,
+                output_setup_fields,
+                answers: advice.answers,
+            };
+            let mut tape = Tape(input.answers.iter());
+            let statement = input.replay(mode, &mut tape, |event| observe(index, event))?;
+            if mode == SetupMode::Defer && tape.0.next().is_some() {
+                return Err("unused outer setup advice".into());
+            }
+            if statement.polynomial() != &polynomial || statement.coefficient_len() != 2 {
+                return Err("outer output batch domain differs".into());
+            }
+            claims.extend(statement.claims().iter().cloned());
+        }
+        SetupBatchStatement::new(polynomial, 2, claims).map_err(|e| e.to_string())
+    }
+}
