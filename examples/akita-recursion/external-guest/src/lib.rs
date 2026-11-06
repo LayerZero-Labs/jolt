@@ -24,10 +24,17 @@ fn observe(event: Event) {
 )]
 fn verify_external(bytes: UntrustedAdvice<serde_bytes::ByteBuf>) -> Vec<u8> {
     jolt::start_cycle_tracking("decode_external");
-    let n=u64::from_le_bytes(bytes.get(..8).expect("hint envelope").try_into().expect("length"))as usize;
-    let base=bytes.get(8..8+n).expect("outer advice range");
-    let offset=8+n+(8-n%8)%8;
-    akita_challenges::install_checked_hints(bytes.get(offset..).expect("hint range")).expect("hint ingress");
+    let n = u64::from_le_bytes(
+        bytes
+            .get(..8)
+            .expect("hint envelope")
+            .try_into()
+            .expect("length"),
+    ) as usize;
+    let base = bytes.get(8..8 + n).expect("outer advice range");
+    let offset = 8 + n + (8 - n % 8) % 8;
+    akita_challenges::install_checked_hints(bytes.get(offset..).expect("hint range"))
+        .expect("hint ingress");
     let advice: OuterAdvice = decode_exact(base).expect("external advice");
     let verifier = decode_exact(&VERIFIER.0).expect("fixed outer verifier");
     let input = jolt_akita_external::ExternalInput {
