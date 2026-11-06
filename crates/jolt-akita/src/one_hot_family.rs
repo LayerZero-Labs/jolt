@@ -91,6 +91,7 @@ macro_rules! define_family_types {
         }
 
         impl AkitaOneHotBackendScheme {
+
             pub(crate) fn from_artifact(
                 family: OneHotFamily,
                 bytes: &[u8],
@@ -136,6 +137,7 @@ macro_rules! define_family_types {
                 setup: AkitaVerifierSetup<<JoltOneHotK16 as CommitmentConfig>::Field>,
                 selection: OpeningScheduleSelection,
                 terminal_cache: TrustedTerminalCache<'_>,
+                mode: akita_verifier::SetupMode,
             ) -> Result<AkitaOneHotBackendVerifier, AkitaError> {
                 match self {
                     $(Self::$variant(scheme) => AkitaVerifier::for_selection(
@@ -143,6 +145,7 @@ macro_rules! define_family_types {
                         scheme.schedules().clone(),
                         selection,
                         Some(terminal_cache),
+                        mode,
                     )
                     .map(AkitaOneHotBackendVerifier::$variant)),+
                 }
