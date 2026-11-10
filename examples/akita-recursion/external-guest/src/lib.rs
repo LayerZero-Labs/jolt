@@ -33,7 +33,7 @@ fn verify_external(bytes: UntrustedAdvice<serde_bytes::ByteBuf>) -> Vec<u8> {
     ) as usize;
     let base = bytes.get(8..8 + n).expect("outer advice range");
     let offset = 8 + n + (8 - n % 8) % 8;
-    akita_challenges::install_checked_hints(bytes.get(offset..).expect("hint range"))
+    akita_challenges::install_checked_hints(bytes.get(offset..).expect("hint range"), 1 << 26)
         .expect("hint ingress");
     let advice: OuterAdvice = decode_exact(base).expect("external advice");
     let verifier = decode_exact(&VERIFIER.0).expect("fixed outer verifier");

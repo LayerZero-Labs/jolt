@@ -597,19 +597,6 @@ enum CatalogSource<'a> {
 }
 
 impl AkitaVerifierSetup {
-    /// Compute an untrusted advice answer from the locally materialized setup prefix.
-    pub fn prepare_setup_answer(
-        &self,
-        polynomial: &SetupPolynomialId,
-        query: &SetupQuery<AkitaField>,
-    ) -> Result<AkitaField, OpeningsError> {
-        let verifier = self.one_hot_verifier()?;
-        with_one_hot_family!(verifier verifier, |verifier| {
-            query.evaluate_materialized(polynomial, verifier.setup().expanded())
-        })
-        .map_err(akita_error)
-    }
-
     pub fn setup_offloads(
         &self,
         proof: &AkitaBatchProof,
