@@ -18,7 +18,10 @@
 
 use std::sync::Arc;
 
-use akita_params::{OpeningScheduleSelection, ScheduleRowDigest};
+use akita_params::{
+    verifier_setup_matrix_capacity_for_schedule, FlatMatrix, OpeningScheduleSelection,
+    ScheduleRowDigest, SetupMode as BackendSetupMode,
+};
 use akita_pcs::{
     build_riscv64_terminal_ntt_cache, AkitaDeserialize, AkitaSerialize, Compress, TrustedBytes,
     TrustedTerminalCache, Validate,
@@ -28,6 +31,7 @@ use jolt_openings::OpeningsError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::{ByteBuf, Bytes};
 
+use crate::deferred::SetupMode;
 use crate::one_hot_family::with_one_hot_family;
 use crate::AkitaBatchProof;
 
@@ -350,12 +354,48 @@ impl AkitaVerifierSetup {
         &self,
         proof: &AkitaBatchProof,
     ) -> Result<(Vec<u8>, Vec<u8>), OpeningsError> {
+        self.prepare_recursion_material_for_mode(proof, SetupMode::Check)
+    }
+
+    /// Export the selected row's trusted recursion material for one replay mode.
+    /// Defer retains only the selected row's F/H compression-map coefficients;
+    /// its terminal matrix is authenticated by the separate NTT artifact.
+    ///
+    /// # Errors
+    /// Returns an error if the row is unavailable or its material cannot be encoded.
+    pub fn prepare_recursion_material_for_mode(
+        &self,
+        proof: &AkitaBatchProof,
+        mode: SetupMode,
+    ) -> Result<(Vec<u8>, Vec<u8>), OpeningsError> {
+        let mode = match mode {
+            SetupMode::Check => BackendSetupMode::Check,
+            SetupMode::Defer => BackendSetupMode::Defer,
+        };
         let selection = proof.selection();
         let verifier = self.one_hot_verifier()?;
         let (key, terminal) = with_one_hot_family!(verifier verifier, |verifier| {
-            let key = verifier.setup();
+            let full_key = verifier.setup();
             let row = verifier.schedules().resolve_selection(selection).map_err(invalid_setup)?;
-            let terminal = build_riscv64_terminal_ntt_cache(key, row.schedule(), selection.row_digest).map_err(invalid_setup)?;
+            let terminal = build_riscv64_terminal_ntt_cache(full_key, row.schedule(), selection.row_digest).map_err(invalid_setup)?;
+            let fields = verifier_setup_matrix_capacity_for_schedule(
+                row.schedule(), &row.profiles().opening_layout().map_err(invalid_setup)?, mode,
+            ).map_err(invalid_setup)?.num_field_elements;
+            let expanded = full_key.expanded();
+            let key = if fields != expanded.shared_matrix().num_field_elements() {
+                let coefficients = expanded.shared_matrix().as_field_slice().get(..fields)
+                    .ok_or_else(|| invalid_setup("verifier key lacks the selected row's setup coefficients"))?;
+                let mut descriptor = expanded.descriptor().clone();
+                descriptor.num_field_elements = fields;
+                AkitaBackendVerifierSetup::from_parts(
+                    Arc::new(AkitaExpandedSetup::from_trusted_seed_derived_parts_unchecked(
+                        descriptor, FlatMatrix::from_flat_data(coefficients.to_vec()),
+                    )),
+                    full_key.prefix_slots().clone(),
+                ).map_err(invalid_setup)?
+            } else {
+                full_key.clone()
+            };
             let mut bytes = Vec::with_capacity(key.serialized_size(Compress::No));
             key.serialize_with_mode(&mut bytes, Compress::No).map_err(invalid_setup)?;
             Ok::<_, OpeningsError>((bytes, terminal))
@@ -382,6 +422,25 @@ impl AkitaVerifierSetup {
         key: TrustedBytes,
         terminal: TrustedBytes,
     ) -> Result<(), OpeningsError> {
+        self.install_recursion_material_for_mode(proof, key, terminal, SetupMode::Check)
+    }
+
+    /// Install image-authenticated material with an explicit provisioning mode.
+    /// A Defer verifier rejects Check replay and keys containing raw setup prefixes.
+    ///
+    /// # Errors
+    /// Returns an error for invalid material, an incompatible mode, or an initialized verifier.
+    pub fn install_recursion_material_for_mode(
+        &self,
+        proof: &AkitaBatchProof,
+        key: TrustedBytes,
+        terminal: TrustedBytes,
+        mode: SetupMode,
+    ) -> Result<(), OpeningsError> {
+        let mode = match mode {
+            SetupMode::Check => BackendSetupMode::Check,
+            SetupMode::Defer => BackendSetupMode::Defer,
+        };
         let skew = usize::from(
             *key.bytes()
                 .first()
@@ -400,6 +459,7 @@ impl AkitaVerifierSetup {
                 setup,
                 proof.selection(),
                 TrustedTerminalCache::View(terminal.bytes()),
+                mode,
             )
             .map_err(invalid_setup)?;
         self.backend_cache.install_one_hot(verifier)

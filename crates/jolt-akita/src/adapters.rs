@@ -850,6 +850,7 @@ impl AkitaVerifierSetup {
                             prepared.backend_key()?,
                             prepared.selection(),
                             prepared.terminal_cache()?,
+                            SetupMode::Check,
                         )
                         .map_err(invalid_setup)
                 })?;
