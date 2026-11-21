@@ -4,7 +4,7 @@
 |-------------|--------------------------------|
 | Author(s)   | Andrew Tretyakov               |
 | Created     | 2026-07-17                     |
-| Revised     | 2026-07-21 (v2: prover-owned driver, universal kernels) |
+| Revised     | 2026-07-21 (prover-owned driver, universal kernels) |
 | Status      | proposed                       |
 | PR          |                                |
 
@@ -31,10 +31,11 @@ implement as a single pass. The prover's protocol structure then has exactly one
 the batch struct declaration — consumed by both sides, and `prove_stageX` shrinks to what is
 genuinely stage-specific.
 
-A v1 of this design (driver emitted into jolt-verifier as `prove_clear`, dependency-inverted
-`PrepareSumcheck` bound, `#[sumcheck(external)]` escape hatch, ~8 bespoke slot traits) is
+The earlier verifier-owned design (driver emitted into jolt-verifier as `prove_clear`,
+dependency-inverted `PrepareSumcheck` bound, `#[sumcheck(external)]` escape hatch,
+~8 bespoke slot traits) is
 implemented on `feat/prover-stage-drivers`; §Execution describes the revision from that
-state. The v1 mechanisms this revision deletes are recorded under §Alternatives.
+state. The verifier-owned mechanisms this revision deletes are recorded under §Alternatives.
 
 ## Intent
 
@@ -67,8 +68,8 @@ Key abstractions introduced or modified:
   verb-phrase trait mints the worker that does the compute): `JoltBackend` holds one
   `PrepareKernel` per relation, which mints one `SumcheckKernel` per proof run. The relation
   IS the typed request: the verifier constructs each relation with full geometry, and kernels
-  read dimensions/points/carried vectors off the relation's public accessors (established in
-  v1; kept — see §Alternatives on pub fields) instead of restated constructor arguments.
+  read dimensions/points/carried vectors off the relation's public accessors
+  (see §Alternatives on pub fields) instead of restated constructor arguments.
   Members whose kernels cannot be minted from oracle data alone conform via the two
   non-`ProverInputs` channels `prepare` already receives:
   - *Typed witness rows* (stage-5 instruction read-RAF, stage-6 bytecode indices): fetched
@@ -98,7 +99,7 @@ Key abstractions introduced or modified:
   the fused `ProveRounds` round interface with typed extraction (`output_claims()`,
   `validate_derived_tables()`) and the default-no-op cross-batch residue hook
   (`park_residue(self: Box<Self>, &mut ProofSession)`, invoked by the driver on every
-  member after extraction). Returns to jolt-kernels (its v0 home) together with
+  member after extraction). Returns to jolt-kernels together with
   `SumcheckKernelError`: with the driver generated into jolt-prover, nothing in
   jolt-verifier needs to name it. Kernels own no relation copy — the stage's relation is the
   single source of geometry, threaded back through `validate_derived_tables`.
@@ -115,7 +116,7 @@ Key abstractions introduced or modified:
   The field's own type IS the relation→slot mapping — declared once, restated nowhere. A
   field naming `PrepareKernel` in any other shape is a derive error at its declaration; a
   missing slot, or one spelled through an alias, surfaces as a missing-`PrepareKernel`
-  bound error at the stage impl. This replaces v1's
+  bound error at the stage impl. This replaces the verifier-owned driver's
   `BackendPreparer` (and the interim `HasKernel` lookup trait, folded into `PrepareKernel`);
   any other registry (a partial backend, a test double) implements `PrepareKernel` by hand.
 - **`StageProver<F>`** (jolt-prover): the driver trait, implemented for each stage batch
@@ -145,7 +146,7 @@ Key abstractions introduced or modified:
   slots.
   `Proved<F, S, P>` is one generic carrier in jolt-prover
   `{ recorded, output_claims: S::OutputClaims, output_points: S::OutputPoints, final_claim }`
-  (replaces v1's per-stage generated `ProvedStageN`).
+  (replaces the verifier-owned driver's per-stage generated `ProvedStageN`).
   Output curation (stage-6b's dedup'd absorb order) is a per-impl
   `curate_opening_values(&self, claims: &mut Self::OutputClaims, points:
   &Self::OutputPoints) -> Result<Vec<F>, _>` hook: the macro emits the default body
@@ -164,12 +165,12 @@ Key abstractions introduced or modified:
   invocations are argument-free — `stage3_sumchecks_members!(impl_stage_prover);` — because
   slot resolution rides on the `PrepareKernel` bounds the compiler discharges; only 6b's
   invocation carries its curation override block. The derive
-  emits **no other prover-facing code**: v1's `prove_clear`, `ProvedStageN`, and
+  emits **no other prover-facing code**: the earlier `prove_clear`, `ProvedStageN`, and
   `<Stage>ExternalMembers` emissions are removed. Escalation path: if the consumer outgrows
   `macro_rules!` (it should not — the aggregate-level calls remain ordinary generated
   methods on the batch struct), a function-like proc macro consuming the same token list is
   the fallback, in its own crate.
-- **Fused round API** (jolt-sumcheck; done in v1, unchanged):
+- **Fused round API** (jolt-sumcheck):
   `ProveRounds::{compute_message, ingest_challenge}` became
   `prove_round(&mut self, bind: Option<F>, round: usize, previous_claim: F)
   → Result<UnivariatePoly<F>, SumcheckError<F>>` plus terminal `finish_rounds(&mut self,
@@ -177,11 +178,11 @@ Key abstractions introduced or modified:
   member's first active round); the engine threads it through the activation-window
   bookkeeping. A backend binds and evaluates in one pass over its tables — the contract the
   GPU discussion wanted.
-- **Constructor promotions** (jolt-verifier; done in v1, unchanged):
+- **Constructor promotions** (jolt-verifier):
   `Stage6bSumchecks::build_from_parts` consumes the clear-output carriers both sides hold;
   `Stage1Output`'s remainder-point tail / cycle-binding derivations promoted so stage2's
   `τ_low` and stage6a/6b's point derivations stop hand-copying them. Relation accessor
-  blocks (the kernel read path) likewise land in v1 and stay.
+  blocks remain available to kernels.
 
 What remains per-stage in `prove_stageX` (deliberately): upstream carrier unpacking, the
 mid-head hand choreography the protocol currently requires (stage2's `τ_high` + uni-skip +
@@ -241,7 +242,7 @@ is welcome but not required.
 - **No new backends, no ZK wiring, no tracing.** Those are PRs B/C of `PLAN_OF_PRS.md`. The
   single `prove` is recorder-generic so PR C is a recorder swap plus front work, but
   committed-path wiring is out of scope.
-- **No bespoke sumcheck slots.** (Reverses v1's non-goal.) Every batch member — including
+- **No bespoke sumcheck slots.** Every batch member — including
   the uni-skip remainders, the stage-6a address phases, instruction read-RAF, and the
   precommitted reduction family — is served through `PrepareKernel<F, R>`. The only
   hand-shaped slot traits left are the non-sumcheck ones: `commit` and `joint_opening`.
@@ -306,12 +307,12 @@ is welcome but not required.
   whole-proof ratchets across advice × committed-program × trace-order. Run after each
   migration step, not only at the end (the harness is stage-granular precisely to localize
   drift).
-- **Engine:** jolt-sumcheck twin tests on the fused API (done in v1), including the test
+- **Engine:** jolt-sumcheck twin tests on the fused API, including the test
   that a member implementing fused bind+eval byte-matches a reference member that binds and
   evaluates separately.
-- **Driver:** v1's `prove_clear` twin fixtures move to jolt-prover and are re-expressed
-  against the consumer macro (including the session-carry member replacing v1's `external`
-  fixture member).
+- **Driver:** The verifier-owned `prove_clear` twin fixtures move to jolt-prover and
+  are re-expressed against the consumer macro (including the session-carry member
+  replacing the earlier `external` fixture member).
 - **Verifier suites:** all standard + zk + BlindFold + tampering fixture suites pass against
   cached fixtures (verifier behavior untouched except promotions, same bar as #1669).
 - Both `--features host` and `--features host,zk` clippy/test matrices, per repo policy.
@@ -374,7 +375,7 @@ the session; the call consumes the kernel, so it follows the borrowing extractio
 `curate_opening_values` (default: generated canonical order) → `validate_output_claims` →
 `expected_final_claim` hard check → `recorder.finish`.
 
-**Edge classes and their mechanisms** (the exhaustive list; v1's `external` row replaced):
+**Edge classes and their mechanisms** (the exhaustive list):
 
 | Edge | Mechanism |
 |---|---|
@@ -389,7 +390,7 @@ the session; the call consumes the kernel, so it follows the borrowing extractio
 - **Status quo (hand-written recipes).** Rejected: the #1669 review identified the drift
   class concretely — stage6b's mirrored legs, three inline point-derivation copies, 8×
   epilogues, 27 trait files restating constructors.
-- **v1: emit `prove_clear` into jolt-verifier (implemented, now rejected).** The derive
+- **Emit `prove_clear` into jolt-verifier (implemented, now rejected).** The derive
   expands at the struct definition site, so the driver landed in jolt-verifier — dragging
   `SumcheckKernel`, `ProverInputs`, and a dependency-inverted `PrepareSumcheck`/
   `SumcheckPreparer`/`BackendPreparer` apparatus into/around the verifier crate. Rejected:
@@ -406,7 +407,7 @@ the session; the call consumes the kernel, so it follows the borrowing extractio
   precedent), and the genuinely zk-divergent code is in the stage fronts. One
   recorder-generic `prove`; the verify side's split reflects wire-format dispatch the
   prover doesn't have.
-- **`#[sumcheck(external)]` members (implemented in v1, now rejected).** The escape hatch
+- **`#[sumcheck(external)]` members (implemented, now rejected).** The escape hatch
   for kernels not mintable at prepare time (uni-skip remainders, 6b→7 spans). Replaced by
   `ProofSession` carries so every member is uniform. Acknowledged tradeoff: externals were
   compile-time-visible object flow; session carries are runtime type-keyed state, so a
@@ -428,10 +429,10 @@ the session; the call consumes the kernel, so it follows the borrowing extractio
   symbolic layer is field-independent by design (holds only `Shape`); it cannot carry the
   F-valued instance data kernels need (bound points, carried challenge vectors, public
   inputs), and extending it would break the one-symbolic-object-any-field property.
-- **Slot resolution via a generated `StageNSlots` struct.** Rejected in v0 and still: the
+- **Slot resolution via a generated `StageNSlots` struct.** Rejected: the
   struct would be filled field-by-field per recipe. The `KernelSlots` derive takes the
   field spelling from the field declaration itself.
-- **`jolt_backend_registry!` declaration macro** (implemented mid-v2, rejected): a
+- **`jolt_backend_registry!` declaration macro** (implemented, rejected): a
   `macro_rules!` wrapping the `JoltBackend` declaration to emit field + `HasKernel` impl
   pairs. Rejected: the backend struct must stay a plainly declared, readable struct;
   `#[derive(KernelSlots)]` on the plain struct emits the same impls idiomatically, from the
@@ -445,25 +446,25 @@ the session; the call consumes the kernel, so it follows the borrowing extractio
   `specs/jolt-prover-model-crate.md` and reaffirmed: the loop is stage-invariant engine code
   with real algebra that benefits from being ordinary, testable Rust in one place.
 - **Keep the two-call round API; fuse via the stash idiom.** Rejected on inverted cost
-  grounds: every `ProveRounds` impl was rewritten by v1 anyway, so the fused contract was
+  grounds: every `ProveRounds` impl already supported fused rounds, so the fused contract was
   nearly free and removes the idiom every fusing backend would otherwise need.
 - **Do the protocol idiosyncrasy purge first.** Rejected: the purge is wire-breaking, which
   retires the legacy byte-diff pin — leaving this refactor (the riskier restructuring)
   without its strongest gate. Refactor under the pin; break the wire after (PR D ordering).
-- **`extern crate self as jolt_verifier` for derive path hygiene** (implemented mid-v2,
+- **`extern crate self as jolt_verifier` for derive path hygiene** (implemented,
   rejected): jolt-claims' pre-existing convention, but it aliases a crate to itself to
   satisfy generated paths — a workaround where an explicit knob exists. Replaced by a
   serde-style crate-path attribute on the derives (`#[sumcheck_batch(crate = ...)]` /
   equivalent on `KernelSlots`): absolute default for external users, `crate` passed by the
   defining crate. Realigning jolt-claims is a possible follow-up, not this PR.
 - **Per-kernel wire-claim re-attachment** (the RamValCheck kernel wrapper; implemented
-  mid-v2, rejected): captures dual-role opening values at `prepare` and re-attaches them in
+  during driver relocation, rejected): captures dual-role opening values at `prepare` and re-attaches them in
   `output_claims()` — a hand restatement of relation structure inside one backend's kernel,
   invisible to other backends. Replaced by the naive prover's generic input/output
   id-intersection inference (an interim relation-level `input_carried_outputs()`
   declaration was itself deleted once the inference landed).
 - **`macro_rules!`-stamped kernel families** (the `precommitted_member!` macro; implemented
-  mid-v2, rejected): four invocations stamping impls + builders + closures made the file
+  during driver relocation, rejected): four invocations stamping impls + builders + closures made the file
   unreadable without mental macro expansion. Replaced by plain per-kind impls; readable
   repetition beats generated opacity in kernel code (the derive-generated *protocol* code is
   different: there, the single-sourcing is load-bearing).
@@ -476,16 +477,16 @@ driver, the member-list callback handoff, and `PrepareKernel`.
 generates the head" statement becomes "head and driver"). Crate-level rustdoc: `jolt-kernels`
 (`PrepareKernel`, session-carry conventions), `jolt-verifier-derive` (member-list
 emission), `jolt-prover` (`StageProver`, consumer macro), `jolt-sumcheck` (`ProveRounds`
-contract, done in v1); `jolt-kernels-derive` (`KernelSlots`).
+contract); `jolt-kernels-derive` (`KernelSlots`).
 
 ## Execution
 
-Starting point: `feat/prover-stage-drivers` (v1 complete — fused rounds, v1 driver, universal
+Starting point: `feat/prover-stage-drivers` (fused rounds, verifier-owned driver, universal
 `PrepareKernel` for the naive-served set, all stages migrated, byte-diff green). Each step
 below is gated by the stage-granular byte-diff run.
 
-1. **Bespoke conformance under the v1 driver** (keeps the working driver as the harness
-   while the kernel surface changes):
+1. **Bespoke conformance under the verifier-owned driver** (keeps the working driver
+   as the harness while the kernel surface changes):
    a. Program-data session residency at proof start; migrate the stage-6a address slots
       (`bytecode_read_raf_address`, `booleanity_address`) to `PrepareKernel` — carried 6a
       draws reach them via relation/challenge accessors, typed bytecode indices via the
@@ -506,11 +507,11 @@ below is gated by the stage-granular byte-diff run.
    2 → 6a → 7 → 6b (curation override), byte-diff after each; move
    `SumcheckKernel`/`SumcheckKernelError`/`ProverInputs` to jolt-kernels and delete
    `PrepareSumcheck`/`SumcheckPreparer`/`BackendPreparer` as their last consumers go.
-4. **Twin-test relocation**: v1's `prove_clear` twins move to jolt-prover against the
-   consumer macro (session-carry fixture member replacing the `external` one).
+4. **Twin-test relocation**: the verifier-owned `prove_clear` twins move to jolt-prover
+   against the consumer macro (session-carry fixture member replacing the `external` one).
 5. **Sweep**: acceptance-criteria greps (prover-free verifier, no externals, slot-file
    count), line-count check, clippy matrices, full suite.
-6. **Post-review corrections** (v2.1, from the 2026-07-21 owner review of the completed
+6. **Post-review corrections** (from the 2026-07-21 owner review of the completed
    steps 1–5): (a) generic dual-role attachment (now the id-intersection inference in the
    naive prover); delete the RamValCheck
    kernel wrapper; (b) crate-path derive attributes; drop `extern crate self` from
@@ -529,8 +530,8 @@ below is gated by the stage-granular byte-diff run.
   round loop" position this spec preserves.
 - PR #1669 — the clean-slate prover; its review threads (stage6b mirrored legs, slot-trait
   double-construction, epilogue duplication) are the concrete motivation.
-- `feat/prover-stage-drivers` v1 commits (`910414376..458b6fd8c`) — the implemented v1 this
-  revision builds on and partially deletes.
+- `feat/prover-stage-drivers` initial commits (`910414376..458b6fd8c`) — the
+  verifier-owned implementation this revision builds on and partially deletes.
 - `PLAN_OF_PRS.md` (repo root, untracked) — the PR sequencing this spec is "PR A" of.
 - Andrew ↔ Michael design discussion, 2026-07-15 (universal `ConcreteProverSumcheck`,
   `#[SumcheckBatch]` driving the prover, fused round API, idiosyncrasy list deferral);
